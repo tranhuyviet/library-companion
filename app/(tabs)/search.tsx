@@ -13,12 +13,14 @@ export default function SearchScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [results, setResults] = useState<FinnaRecord[]>([]);
+  const [totalResults, setTotalResults] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
 
   const performSearch = useCallback(async (query: string) => {
     if (query.length < 2) {
       setResults([]);
+      setTotalResults(0);
       setError(null);
       return;
     }
@@ -28,10 +30,13 @@ export default function SearchScreen() {
     try {
       const response = await searchBooks(query, { limit: 20, lng: 'en' });
       setResults(response.records || []);
-    } catch (err) {
+      setTotalResults(response.resultCount || 0);
+    } catch (err: any) {
       console.error('Search error:', err);
-      setError('Failed to search. Please try again.');
+      const errorMessage = err?.message || 'Failed to search. Please try again.';
+      setError(errorMessage);
       setResults([]);
+      setTotalResults(0);
     } finally {
       setIsSearching(false);
     }
@@ -49,6 +54,7 @@ export default function SearchScreen() {
   const handleClear = () => {
     setSearchQuery('');
     setResults([]);
+    setTotalResults(0);
     setError(null);
   };
 
@@ -99,7 +105,9 @@ export default function SearchScreen() {
 
       {results.length > 0 && (
         <View style={styles.resultsHeader}>
-          <Text style={styles.resultsCount}>{results.length} results</Text>
+          <Text style={styles.resultsCount}>
+            Showing {results.length} of {totalResults} {totalResults === 1 ? 'result' : 'results'}
+          </Text>
         </View>
       )}
 
