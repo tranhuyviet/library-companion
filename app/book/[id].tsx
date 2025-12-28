@@ -24,11 +24,18 @@ export default function BookDetailScreen() {
       setLoading(true);
       setError(null);
       try {
+        console.log('Fetching book details for ID:', id);
         const data = await getBookDetails(id, 'en');
-        setBookData(data);
-      } catch (err) {
+        console.log('Book details received:', data);
+        if (data && data.title) {
+          setBookData(data);
+        } else {
+          console.warn('Book data is missing title:', data);
+          setError('Book data is incomplete');
+        }
+      } catch (err: any) {
         console.error('Error fetching book details:', err);
-        setError('Failed to load book details. Please try again.');
+        setError(err?.message || 'Failed to load book details. Please try again.');
       } finally {
         setLoading(false);
       }

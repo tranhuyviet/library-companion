@@ -94,10 +94,16 @@ function transformRecord(record: any): FinnaRecord {
     }
   }
   
-  // Handle formats
+  // Handle formats - can be array of strings or objects with {value, translated}
   let formats: string[] = [];
   if (record.formats) {
-    formats = Array.isArray(record.formats) ? record.formats : [record.formats];
+    const formatArray = Array.isArray(record.formats) ? record.formats : [record.formats];
+    formats = formatArray.map((f: any) => {
+      if (typeof f === 'string') return f;
+      if (f.translated) return f.translated;
+      if (f.value) return f.value;
+      return String(f);
+    });
   }
   
   // Handle publishers
@@ -163,10 +169,99 @@ export async function getBookDetails(
       throw new Error(`API error: ${response.status} ${response.statusText}`);
     }
 
-    const data = await response.json();
+    const responseData = await response.json();
+    
+    // Log for debugging (can be removed in production)
+    if (__DEV__) {
+      console.log('Finna API record response:', JSON.stringify(responseData, null, 2));
+    }
+    
+    // Handle different response structures
+    // Some APIs return the record directly, others wrap it in a records array
+    let data: any;
+    if (responseData.records && Array.isArray(responseData.records) && responseData.records.length > 0) {
+      // Response has records array - take the first record
+      data = responseData.records[0];
+      console.log('Using record from records array');
+    } else if (responseData.id || responseData.recordId || responseData['@id']) {
+      // Response is the record itself
+      data = responseData;
+      console.log('Using record directly');
+    } else {
+      console.warn('Invalid API response structure:', responseData);
+      throw new Error('Invalid book data received from API');
+    }
+    
+    // Check if we have valid data
+    if (!data || (!data.id && !data.recordId && !data['@id'])) {
+      console.warn('Invalid record data:', data);
+      throw new Error('Invalid book data received from API');
+    }
     
     // Transform the record
     const transformedRecord = transformRecord(data);
+    
+    // Ensure we have at least a title
+    if (!transformedRecord.title) {
+      console.warn('Transformed record missing title:', transformedRecord);
+      // Try to get title from raw data
+      transformedRecord.title = data.title || data.titleFull || data.titleMain || 'Untitled';
+    }
+    
+    // Extract additional fields for book detail
+    const subjects = data.subjects 
+      ? (Array.isArray(data.subjects) ? data.subjects : [data.subjects])
+      : data.subject 
+      ? (Array.isArray(data.subject) ? data.subject : [data.subject])
+      : [];
+    
+    const tableOfContents = data.tableOfContents 
+      ? (Array.isArray(data.tableOfContents) ? data.tableOfContents : [data.tableOfContents])
+      : data.contents
+      ? (Array.isArray(data.contents) ? data.contents : [data.contents])
+      : [];
+    
+    const isbn = data.isbn 
+      ? (Array.isArray(data.isbn) ? data.isbn : [data.isbn])
+      : data.isbns
+      ? (Array.isArray(data.isbns) ? data.isbns : [data.isbns])
+      : [];
+    
+    const issn = data.issn 
+      ? (Array.isArray(data.issn) ? data.issn : [data.issn])
+      : data.issns
+      ? (Array.isArray(data.issns) ? data.issns : [data.issns])
+      : [];
+    
+    const physicalDescriptions = data.physicalDescriptions 
+      ? (Array.isArray(data.physicalDescriptions) ? data.physicalDescriptions : [data.physicalDescriptions])
+      : data.physicalDescription
+      ? (Array.isArray(data.physicalDescription) ? data.physicalDescription : [data.physicalDescription])
+      : [];
+    
+    // Handle series - can be array of strings or objects with {name}
+    let series: string[] = [];
+    if (data.series) {
+      const seriesArray = Array.isArray(data.series) ? data.series : [data.series];
+      series = seriesArray.map((s: any) => {
+        if (typeof s === 'string') return s;
+        if (s.name) return s.name;
+        return String(s);
+      });
+    } else if (data.seriesNames) {
+      const seriesArray = Array.isArray(data.seriesNames) ? data.seriesNames : [data.seriesNames];
+      series = seriesArray.map((s: any) => {
+        if (typeof s === 'string') return s;
+        if (s.name) return s.name;
+        return String(s);
+      });
+    }
+    
+    const genres = data.genres 
+      ? (Array.isArray(data.genres) ? data.genres : [data.genres])
+      : data.genre
+      ? (Array.isArray(data.genre) ? data.genre : [data.genre])
+      : [];
     
     // Add availability information if available
     const bookDetail: FinnaBookDetail = {
@@ -174,7 +269,13 @@ export async function getBookDetails(
       availability: extractAvailability(data),
       holdings: extractHoldings(data),
       summary: data.summaries || (data.summary ? [data.summary] : []),
-      subjects: data.subjects || (data.subject ? [data.subject] : []),
+      subjects,
+      tableOfContents,
+      isbn,
+      issn,
+      physicalDescriptions,
+      series,
+      genres,
     };
     
     return bookDetail;
@@ -188,21 +289,58 @@ export async function getBookDetails(
  * Extract availability information from API response
  */
 function extractAvailability(data: any): any {
+  // Try different possible structures from Finna API
+  let holdings: any[] = [];
+  
   if (data.holdings) {
-    const holdings = Array.isArray(data.holdings) ? data.holdings : [data.holdings];
-    const available = holdings.filter((h: any) => h.availability === 'available' || h.status === 'available').length;
-    const total = holdings.length;
+    holdings = Array.isArray(data.holdings) ? data.holdings : [data.holdings];
+  } else if (data.availability) {
+    // Some APIs return availability directly
+    if (Array.isArray(data.availability)) {
+      holdings = data.availability;
+    } else {
+      holdings = [data.availability];
+    }
+  } else if (data.buildings) {
+    // Some APIs structure it as buildings
+    holdings = Array.isArray(data.buildings) ? data.buildings : [data.buildings];
+  }
+  
+  if (holdings.length > 0) {
+    let available = 0;
+    let total = 0;
+    const locations: any[] = [];
+    
+    holdings.forEach((h: any) => {
+      const locationName = h.location || h.branch || h.building || h.name || 'Unknown';
+      const availableCount = h.available || (h.availability === 'available' || h.status === 'available' ? 1 : 0);
+      const totalCount = h.total || h.count || 1;
+      
+      available += availableCount;
+      total += totalCount;
+      
+      locations.push({
+        location: locationName,
+        available: availableCount,
+        callNumber: h.callNumber || h.callnumber || h.shelfMark || '',
+        dueDate: h.dueDate || h.duedate || h.nextAvailableDate || '',
+        status: h.status || h.availability || (availableCount > 0 ? 'available' : 'unavailable'),
+      });
+    });
     
     return {
       available,
       total,
-      locations: holdings.map((h: any) => ({
-        location: h.location || h.branch || '',
-        available: h.availability === 'available' || h.status === 'available' ? 1 : 0,
-        callNumber: h.callNumber || h.callnumber || '',
-        dueDate: h.dueDate || h.duedate || '',
-        status: h.status || h.availability || '',
-      })),
+      locations,
+    };
+  }
+  
+  // Fallback: try to extract from other fields
+  if (data.availableCount !== undefined || data.totalCount !== undefined) {
+    return {
+      available: data.availableCount || 0,
+      total: data.totalCount || 0,
+      locations: [],
     };
   }
   

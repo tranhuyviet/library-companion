@@ -32,6 +32,12 @@ export interface FinnaBookDetail extends FinnaRecord {
   holdings?: Holding[];
   summary?: string[];
   subjects?: string[];
+  tableOfContents?: string[];
+  isbn?: string[];
+  issn?: string[];
+  physicalDescriptions?: string[];
+  series?: string[];
+  genres?: string[];
 }
 
 export interface AvailabilityInfo {
