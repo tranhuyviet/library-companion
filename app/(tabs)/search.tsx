@@ -12,49 +12,93 @@ import SearchBar from '../../components/SearchBar';
 export default function SearchScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [results, setResults] = useState<FinnaRecord[]>([]);
   const [totalResults, setTotalResults] = useState<number>(0);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
 
-  const performSearch = useCallback(async (query: string) => {
+  const performSearch = useCallback(async (query: string, page: number = 1, append: boolean = false) => {
     if (query.length < 2) {
       setResults([]);
       setTotalResults(0);
       setError(null);
+      setCurrentPage(1);
+      setHasMore(false);
       return;
     }
 
-    setIsSearching(true);
-    setError(null);
+    if (append) {
+      setIsLoadingMore(true);
+    } else {
+      setIsSearching(true);
+      setError(null);
+    }
+
     try {
-      const response = await searchBooks(query, { limit: 20, lng: 'en' });
-      setResults(response.records || []);
-      setTotalResults(response.resultCount || 0);
+      const response = await searchBooks(query, { limit: 20, page, lng: 'en' });
+      const newRecords = response.records || [];
+      const totalCount = response.resultCount || 0;
+      
+      if (append) {
+        setResults(prev => {
+          // Filter out duplicates by ID
+          const existingIds = new Set(prev.map(r => r.id));
+          const uniqueNewRecords = newRecords.filter(r => r.id && !existingIds.has(r.id));
+          const updated = [...prev, ...uniqueNewRecords];
+          // Check if there are more results to load
+          setHasMore(updated.length < totalCount);
+          return updated;
+        });
+      } else {
+        // Filter duplicates in initial results too
+        const uniqueRecords = newRecords.filter((record, index, self) => 
+          record.id && index === self.findIndex(r => r.id === record.id)
+        );
+        setResults(uniqueRecords);
+        // Check if there are more results to load
+        setHasMore(uniqueRecords.length < totalCount);
+      }
+      
+      setTotalResults(totalCount);
+      setCurrentPage(page);
     } catch (err: any) {
       console.error('Search error:', err);
       const errorMessage = err?.message || 'Failed to search. Please try again.';
       setError(errorMessage);
-      setResults([]);
-      setTotalResults(0);
+      if (!append) {
+        setResults([]);
+        setTotalResults(0);
+      }
     } finally {
       setIsSearching(false);
+      setIsLoadingMore(false);
     }
   }, []);
 
   // Debounce search
   useEffect(() => {
     const timeoutId = setTimeout(() => {
-      performSearch(searchQuery);
+      performSearch(searchQuery, 1, false);
     }, 500);
 
     return () => clearTimeout(timeoutId);
-  }, [searchQuery, performSearch]);
+  }, [searchQuery]);
+
+  const loadMore = useCallback(() => {
+    if (!isLoadingMore && hasMore && searchQuery.length >= 2) {
+      performSearch(searchQuery, currentPage + 1, true);
+    }
+  }, [isLoadingMore, hasMore, searchQuery, currentPage, performSearch]);
 
   const handleClear = () => {
     setSearchQuery('');
     setResults([]);
     setTotalResults(0);
+    setCurrentPage(1);
+    setHasMore(false);
     setError(null);
   };
 
@@ -80,7 +124,7 @@ export default function SearchScreen() {
         </View>
       )}
 
-      {isSearching && (
+      {isSearching && results.length === 0 && (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={Colors.primary} />
           <Text style={styles.loadingText}>Searching...</Text>
@@ -113,7 +157,7 @@ export default function SearchScreen() {
 
       <FlatList
         data={results}
-        keyExtractor={(item) => item.id}
+        keyExtractor={(item, index) => item.id || `book-${index}`}
         renderItem={({ item }) => (
           <BookCard
             book={item}
@@ -122,6 +166,24 @@ export default function SearchScreen() {
         )}
         contentContainerStyle={styles.listContent}
         ListEmptyComponent={null}
+        onEndReached={loadMore}
+        onEndReachedThreshold={0.5}
+        ListFooterComponent={
+          isLoadingMore ? (
+            <View style={styles.loadMoreContainer}>
+              <ActivityIndicator size="small" color={Colors.primary} />
+              <Text style={styles.loadMoreText}>Loading more...</Text>
+            </View>
+          ) : hasMore ? (
+            <View style={styles.loadMoreContainer}>
+              <Text style={styles.loadMoreText}>Scroll for more results</Text>
+            </View>
+          ) : results.length > 0 ? (
+            <View style={styles.loadMoreContainer}>
+              <Text style={styles.loadMoreText}>No more results</Text>
+            </View>
+          ) : null
+        }
       />
     </SafeAreaView>
   );
@@ -203,6 +265,16 @@ const styles = StyleSheet.create({
   listContent: {
     paddingHorizontal: 20,
     paddingBottom: 20,
+  },
+  loadMoreContainer: {
+    paddingVertical: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadMoreText: {
+    fontSize: 14,
+    color: Colors.textSecondary,
+    marginTop: 8,
   },
 });
 
